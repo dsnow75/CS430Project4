@@ -30,9 +30,15 @@ typedef struct {
         } camera;
         struct {
             double radius;
+            double reflectivity;
+            double refractivity;
+            double ior;
         } sphere;
         struct {
             double normal[3];
+            double reflectivity;
+            double refractivity;
+            double ior;
         } plane;
     };
 } Object;
@@ -607,7 +613,13 @@ void parse_sphere(FILE* json, Object* object) {
                 object->position[1] = value[1];
                 object->position[2] = value[2];
                 hasposition = 1;
-            } else {
+            } else if(strcmp(key, "reflectivity") == 0){
+                object->sphere.reflectivity = next_number(json);
+            } else if(strcmp(key, "refractivity") == 0){
+                object->sphere.refractivity = next_number(json);
+            } else if(strcmp(key, "ior") == 0){
+                object->sphere.ior = next_number(json);
+            }else{
                 fprintf(stderr, "Error: Unknown property '%s' for 'sphere'. (Line %d)\n", key, line);
                 exit(1);
             }
@@ -680,7 +692,13 @@ void parse_plane(FILE* json, Object* object) {
                 object->position[1] = value[1];
                 object->position[2] = value[2];
                 hasposition = 1;
-            } else {
+            } else if(strcmp(key, "reflectivity") == 0){
+                object->plane.reflectivity == next_number(json);
+            }else if(strcmp(key, "refractivity") == 0){
+                object->plane.refractivity == next_number(json);
+            }else if(strcmp(key, "ior") == 0){
+                object->plane.ior == next_number(json);
+            }else{
                 fprintf(stderr, "Error: Unknown property '%s' for 'sphere'. (Line %d)\n", key, line);
                 exit(1);
             }
