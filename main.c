@@ -11,6 +11,7 @@
 #include <string.h>
 #include <math.h>
 
+//define global constants
 #define SPHERE 0
 #define PLANE 1
 #define MAX_COLOR 255
@@ -103,10 +104,13 @@ static inline double v3_dot(v3 a, v3 b) {
     return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2]);
 }
 
+//functions
 void read_scene(FILE*);
 void raycast(FILE*);
 double* illuminate(double*, double*, Object*);
 double* shade(Object*, double*, double*, int, double);
+double* direct_shade(Object*, double*, double*, double*, double*);
+double* refraction(double, double, double*, double*);
 int compare_objects(Object*, Object*);
 double diffuse(double, double, double);
 double specular(double, double, double, double);
@@ -125,7 +129,7 @@ char* next_string(FILE*);
 double next_number(FILE*);
 double* next_vector(FILE*);
 double clamp(double, double, double);
-void output_p6(FILE*);
+void output_picture(FILE*);
 
 // initialize input file line counter
 int line = 1;
@@ -172,8 +176,10 @@ int main(int argc, char** argv) {
     objects = malloc(sizeof(Object*)*129);
     lights = malloc(sizeof(Light*)*129);
     
+    //parses objects into proper arrays
     read_scene(json);
     
+    //sets up pixels for the picture
     raycast(json);
     
     // open and check output file location
@@ -184,7 +190,7 @@ int main(int argc, char** argv) {
     }
     
     // write pixel data to output file then close it
-    output_p6(output);
+    output_picture(output);
     fclose(output);
     
     //Frees the object and light arrays
@@ -459,8 +465,8 @@ double* illuminate(double* Rd, double* Ro, Object* closest_object) {
             double specular_component = v3_dot(R, obj_to_cam);
 
             // normalize light direction
-            double* ld = current_light->direction;
-            normalize(ld);
+            double* light_direction = current_light->direction;
+            normalize(light_direction);
 
             // find diffuse color
             double diffuse_color[3];
@@ -476,7 +482,7 @@ double* illuminate(double* Rd, double* Ro, Object* closest_object) {
 
             // get attenuation values
             double rad = frad(dl, current_light->radial_a0, current_light->radial_a1, current_light->radial_a2);
-            double ang = fang(ld, light_to_obj, current_light->angular_a0, current_light->theta);
+            double ang = fang(light_direction, light_to_obj, current_light->angular_a0, current_light->theta);
 
             // modify color if pixel to reflect changes from illumination
             current_color[0] += rad * ang * (diffuse_color[0] + specular_color[0]);
@@ -488,7 +494,7 @@ double* illuminate(double* Rd, double* Ro, Object* closest_object) {
     return current_color;
 }
 
-double* shade(Object* current_object, double* Rd, double* Ro, int level, double ior) {
+double* shade(Object* current_object, double* rd, double* ro, int level, double ior) {
     double* color = malloc(sizeof(double)*3);
     color[0] = 0;
     color[1] = 0;
@@ -498,11 +504,11 @@ double* shade(Object* current_object, double* Rd, double* Ro, int level, double 
         return color;
     }
     
-    v3_add(color, illuminate(Rd, Ro, current_object), color);
+    v3_add(color, illuminate(rd, ro, current_object), color);
     
     double N[3];
     if (current_object->kind == SPHERE) {
-        v3_subtract(Ro, current_object->position, N);
+        v3_subtract(ro, current_object->position, N);
     } else {
         N[0] = current_object->plane.normal[0];
         N[1] = current_object->plane.normal[1];
@@ -512,8 +518,8 @@ double* shade(Object* current_object, double* Rd, double* Ro, int level, double 
 
     if (current_object->reflectivity > 0) {
         double reflected_ray[3];
-        v3_scale(N, 2*v3_dot(N, Rd), reflected_ray);
-        v3_subtract(Rd, reflected_ray, reflected_ray);
+        v3_scale(N, 2*v3_dot(N, rd), reflected_ray);
+        v3_subtract(rd, reflected_ray, reflected_ray);
         normalize(reflected_ray);
 
         double best_t = INFINITY;
@@ -526,7 +532,7 @@ double* shade(Object* current_object, double* Rd, double* Ro, int level, double 
 
             double* offset = malloc(sizeof(double)*3);
             v3_scale(reflected_ray, 0.00001, offset);
-            v3_add(offset, Ro, offset);
+            v3_add(offset, ro, offset);
             
             double t = 0;
             switch (objects[i]->kind) {
@@ -551,7 +557,7 @@ double* shade(Object* current_object, double* Rd, double* Ro, int level, double 
         if (best_t > 0 && best_t != INFINITY) {
             double* Ron = malloc(sizeof(double)*3);
             v3_scale(reflected_ray, best_t, Ron);
-            v3_add(Ro, Ron, Ron);
+            v3_add(ro, Ron, Ron);
 
             double* reflected_color = malloc(sizeof(double)*3);
             v3_scale(shade(closest_object, reflected_ray, Ron, level+1, current_object->ior), current_object->reflectivity, reflected_color);
@@ -560,7 +566,167 @@ double* shade(Object* current_object, double* Rd, double* Ro, int level, double 
         }
     }
     
+    if (current_object->refractivity > 0) {
+        double* refracted_ray = refraction(ior, current_object->ior, rd, N);
+        
+        double* offset = malloc(sizeof(double)*3);
+        v3_scale(refracted_ray, 0.00001, offset);
+        v3_add(offset, ro, offset);
+        
+        double d;
+        switch (current_object->kind) {
+            case SPHERE:
+                d = sphere_intersect(offset, refracted_ray, current_object->position, current_object->sphere.radius);
+                break;
+            case PLANE:
+                d = plane_intersect(offset, refracted_ray, current_object->position, current_object->plane.normal);
+                break;
+            default:
+                fprintf(stderr, "Error: Unknown object.\n");
+                exit(1);
+        }
+        
+        double* back = malloc(sizeof(double)*3);
+        v3_scale(refracted_ray, d, back);
+        v3_add(ro, back, back);
+        
+        double* back_normal = malloc(sizeof(double)*3);
+        if (current_object->kind == SPHERE) {
+            v3_subtract(back, current_object->position, back_normal);
+        } else if (current_object->kind == PLANE) {
+            back_normal = current_object->plane.normal;
+            v3_scale(back_normal, -1, back_normal);
+        }
+        normalize(back_normal);
+        
+        double* next_ray = refraction(current_object->ior, 1.0, refracted_ray, back_normal);
+        
+        double best_t = INFINITY;
+        Object* closest_object;
+        // look for intersection of an object 
+        for (int i=0; objects[i] != NULL; i++) {
+            // skip checking for intersection with the object already being looked at
+            if (compare_objects(current_object, objects[i]))
+                continue;
+
+            double* offset = malloc(sizeof(double)*3);
+            v3_scale(refracted_ray, 0.00001, offset);
+            v3_add(offset, ro, offset);
+            
+            double t = 0;
+            switch (objects[i]->kind) {
+                case SPHERE:
+                    t = sphere_intersect(offset, next_ray, objects[i]->position, objects[i]->sphere.radius);
+                    break;
+                case PLANE:
+                    t = plane_intersect(offset, next_ray, objects[i]->position, objects[i]->plane.normal);
+                    break;
+                default:
+                    fprintf(stderr, "Error: Unknown object.\n");
+                    exit(1);
+            }
+
+            // save object if it intersects closer to the camera
+            if (t > 0 && t < best_t) {
+                best_t = t;
+                closest_object = objects[i];
+            }
+        }
+        
+        if (best_t > 0 && best_t != INFINITY) {
+            double* Ron = malloc(sizeof(double)*3);
+            v3_scale(next_ray, best_t, Ron);
+            v3_add(ro, Ron, Ron);
+
+            double* refracted_color = malloc(sizeof(double)*3);
+            v3_scale(shade(closest_object, next_ray, Ron, level+1, current_object->ior), current_object->reflectivity, refracted_color);
+            
+            v3_add(color, direct_shade(closest_object, Ron, refracted_color, next_ray, back), color);
+            v3_add(color, refracted_color, color);
+        }
+    }
+    
+    
     return color;
+}
+
+double* direct_shade(Object* current_object, double* pixel_position, double* light_color, double* light_direction, double* light_position) {
+    double* color = malloc(sizeof(double)*3);
+    color[0] = 0;
+    color[1] = 0;
+    color[2] = 0;
+    
+    double* N = malloc(sizeof(double)*3);
+    if (current_object->kind == SPHERE)
+        v3_subtract(pixel_position, current_object->position, N);
+    else
+        N = current_object->plane.normal;
+    normalize(N);
+    
+    // find vector from the object to the light
+    double obj_to_light[3];
+    v3_subtract(light_position, pixel_position, obj_to_light);
+    normalize(obj_to_light);
+    
+    double obj_to_cam[3];
+    v3_subtract(camera.position, pixel_position, obj_to_cam);
+    normalize(obj_to_cam);
+    
+    double R[3];
+    v3_scale(N, 2*v3_dot(N, light_direction), R);
+    v3_subtract(light_direction, R, R);
+    normalize(R);
+    
+    // calculate (N*L)
+    double diffuse_component = v3_dot(N, obj_to_light);
+    // calculate (R*V)
+    double specular_component = v3_dot(R, obj_to_cam);
+    
+    // find diffuse color
+    double diffuse_color[3];
+    diffuse_color[0] = diffuse(light_color[0], current_object->diffuse_color[0], diffuse_component);
+    diffuse_color[1] = diffuse(light_color[1], current_object->diffuse_color[1], diffuse_component);
+    diffuse_color[2] = diffuse(light_color[2], current_object->diffuse_color[2], diffuse_component);
+
+    // find specular color
+    double specular_color[3];
+    specular_color[0] = specular(light_color[0], current_object->specular_color[0], diffuse_component, specular_component);
+    specular_color[1] = specular(light_color[1], current_object->specular_color[1], diffuse_component, specular_component);
+    specular_color[2] = specular(light_color[2], current_object->specular_color[2], diffuse_component, specular_component);
+
+    // modify color if pixel to reflect changes from illumination
+    color[0] += (diffuse_color[0] + specular_color[0]);
+    color[1] += (diffuse_color[1] + specular_color[1]);
+    color[2] += (diffuse_color[2] + specular_color[2]);
+    
+    return color;
+}
+
+double* refraction(double outer_ior, double inner_ior, double* ray_in, double* N) {
+    double* ray_out = malloc(sizeof(double)*3);
+    
+    double eta, c1, cs2; 
+    eta = outer_ior / inner_ior;
+    c1 = v3_dot(ray_in, N) * -1; // cos(theta)
+    cs2 = 1 - eta * eta * (1 - c1 * c1); // cos^2(phi)
+
+    if (cs2 < 0) { // total internal reflection
+      ray_out[0] = 0.0;
+      ray_out[1] = 0.0;
+      ray_out[2] = 0.0;
+      return ray_out;
+    }
+
+    // Linear combination:
+    // transmittedRay = eta * incomingRay + (eta * c1 - sqrt(cs2)) * normal
+    double* temp = malloc(3 * sizeof(double));
+    v3_scale(ray_in, eta, temp);
+    v3_scale(N, eta * c1 - sqrt(cs2), ray_out);
+    v3_add(temp, ray_out, ray_out);
+
+    normalize(ray_out);
+
+    return ray_out;
 }
 
 // compares two objects based on field values because c cant compare objects directly
@@ -590,17 +756,17 @@ int compare_objects(Object* a, Object* b) {
 }
 
 // calculates diffuse component of illumination formula
-double diffuse(double light_value, double object_value, double diffuse_component) {
+double diffuse(double light, double object, double diffuse_component) {
     if (diffuse_component > 0)
-        return light_value * object_value * diffuse_component;
+        return light * object * diffuse_component;
     
     return 0;
 }
 
 // calculates specular component of illumination formula
-double specular(double light_value, double object_value, double diffuse_component, double specular_component) {
+double specular(double light, double object, double diffuse_component, double specular_component) {
     if (specular_component > 0 && diffuse_component > 0)
-        return light_value * object_value * pow(specular_component, 20);
+        return light * object * pow(specular_component, 20);
     
     return 0;
 }
@@ -1086,7 +1252,7 @@ double clamp(double number, double min, double max) {
 }
 
 // outputs data in buffer to output file
-void output_p6(FILE* outputfp) {
+void output_picture(FILE* outputfp) {
     // create header
     fprintf(outputfp, "P6\n%d %d\n%d\n", H, W, MAX_COLOR);
     // writes buffer to output Pixel by Pixel
