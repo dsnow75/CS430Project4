@@ -707,23 +707,22 @@ double* refraction(double outer_ior, double inner_ior, double* ray_in, double* N
     
     double eta, cosine_theta, cosine_squared; 
     eta = outer_ior / inner_ior;
-    cosine_theta = v3_dot(ray_in, N) * -1; // cos(theta)
-    cosine_squared = 1 - eta * eta * (1 - cosine_theta * cosine_theta); // cos^2(phi)
+    cosine_theta = v3_dot(ray_in, N) * -1;
+    cosine_squared = 1 - eta * eta * (1 - cosine_theta * cosine_theta);
 
-    if (cosine_squared < 0) { // total internal reflection
+    if (cosine_squared < 0) { //internal reflection
       ray_out[0] = 0.0;
       ray_out[1] = 0.0;
       ray_out[2] = 0.0;
       return ray_out;
     }
 
-    // Linear combination:
-    // transmittedRay = eta * incomingRay + (eta * c1 - sqrt(cs2)) * normal
+    // linear combination
     double* temp = malloc(3 * sizeof(double));
     v3_scale(ray_in, eta, temp);
     v3_scale(N, eta * cosine_theta - sqrt(cosine_squared), ray_out);
     v3_add(temp, ray_out, ray_out);
-
+    //normalize ray_out
     normalize(ray_out);
 
     return ray_out;
